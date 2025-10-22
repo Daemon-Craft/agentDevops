@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'DevOps Multi-Agent Incident Manager'
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 1024
+    Runtime: python3.11
+    Environment:
+      Variables:
+        AWS_REGION: us-east-1
+        LOG_LEVEL: INFO
+
+Resources:
+  # ========== LAMBDA FUNCTION ==========
+  IncidentManagerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: devops-incident-manager
+      CodeUri: ./
+      Handler: supervisor.lambda_handler
+      Description: Multi-Agent system for incident management
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: anthropic.claude-3-sonnet-20240229-v1:0
+          DYNAMODB_TABLE: !Ref IncidentTable
+          INCIDENT_TABLE_NAME: !Ref IncidentTable
+          INCIDENT_METRICS_NAMESPACE: DevOpsIncidentManager
+      Policies:
+        # Bedrock permissions
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'bedrock:InvokeModel'
+                - 'bedrock:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:InvokeModel'
+                - 'bedrock-runtime:InvokeModelWithResponseStream'
+                - 'bedrock-runtime:Converse'
+                - 'bedrock-runtime:ConverseStream'
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - 'bedrock-agent-runtime:*'
+              Resource: '*'
+        # DynamoDB permissions
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentTable
+        # CloudWatch permissions
+        - CloudWatchPutMetricPolicy: {}
+        - CloudWatchLogsFullAccess: {}
+        # Other AWS services
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'rds:ModifyDBParameterGroup'
+                - 'rds:DescribeDBInstances'
+                - 'ecs:UpdateService'
+                - 'ecs:DescribeServices'
+                - 'sns:Publish'
+                - 'sqs:SendMessage'
+              Resource: '*'
+      Events:
+        # API Gateway trigger
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /incident
+            Method: POST
+            RestApiId: !Ref IncidentAPI
+        # CloudWatch Alarm trigger
+        CloudWatchEvent:
+          Type: CloudWatchEvent
+          Properties:
+            Pattern:
+              source:
+                - aws.cloudwatch
+              detail-type:
+                - CloudWatch Alarm State Change
+
+  # ========== DYNAMODB TABLE ==========
+  IncidentTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: incident-reports
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: incident_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: incident_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: Application
+          Value: DevOpsIncidentManager
+
+  # ========== API GATEWAY ==========
+  IncidentAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'*'"
+        AllowHeaders: "'*'"
+        AllowOrigin: "'*'"
+      Auth:
+        ApiKeyRequired: true
+
+  # ========== API KEY ==========
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: devops-incident-manager-key
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref IncidentAPI
+          StageName: prod
+
+  # ========== S3 BUCKET FOR LOGS ==========
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'devops-incident-logs-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ========== CLOUDWATCH DASHBOARD ==========
+  IncidentDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: DevOpsIncidentManager
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  [ "DevOpsIncidentManager", "IncidentResolutionTime", { "stat": "Average" } ],
+                  [ ".", "IncidentResolved", { "stat": "Sum" } ]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Incident Resolution Metrics"
+              }
+            },
+            {
+              "type": "log",
+              "properties": {
+                "query": "SOURCE '/aws/lambda/devops-incident-manager' | fields @timestamp, @message | sort @timestamp desc | limit 50",
+                "region": "${AWS::Region}",
+                "title": "Recent Incidents",
+                "queryLanguage": "cwli"
+              }
+            }
+          ]
+        }
+
+  # ========== SNS TOPIC FOR NOTIFICATIONS ==========
+  IncidentTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: devops-incidents
+      DisplayName: DevOps Incident Notifications
+      Subscription:
+        - Endpoint: !GetAtt IncidentManagerFunction.Arn
+          Protocol: lambda
+
+  # ========== LAMBDA PERMISSION FOR SNS ==========
+  SnsLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IncidentManagerFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref IncidentTopic
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${IncidentAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/incident'
+  
+  FunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt IncidentManagerFunction.Arn
+  
+  DynamoDBTable:
+    Description: DynamoDB table name
+    Value: !Ref IncidentTable
+  
+  SNSTopic:
+    Description: SNS topic ARN for incident notifications
+    Value: !Ref IncidentTopic
+  
+  DashboardURL:
+    Description: CloudWatch Dashboard URL
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=DevOpsIncidentManager'
