@@ -19,12 +19,14 @@ Resources:
     Properties:
       FunctionName: devops-incident-manager
       CodeUri: ./
-      Handler: devops_multiagent_system.lambda_handler
+      Handler: supervisor.lambda_handler
       Description: Multi-Agent system for incident management
       Environment:
         Variables:
           BEDROCK_MODEL_ID: anthropic.claude-3-sonnet-20240229-v1:0
           DYNAMODB_TABLE: !Ref IncidentTable
+          INCIDENT_TABLE_NAME: !Ref IncidentTable
+          INCIDENT_METRICS_NAMESPACE: DevOpsIncidentManager
       Policies:
         # Bedrock permissions
         - Version: '2012-10-17'
@@ -67,6 +69,7 @@ Resources:
           Properties:
             Path: /incident
             Method: POST
+            RestApiId: !Ref IncidentAPI
         # CloudWatch Alarm trigger
         CloudWatchEvent:
           Type: CloudWatchEvent

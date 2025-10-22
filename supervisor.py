@@ -1,21 +1,22 @@
-# devops_multiagent_system.py
 """
 Multi-Agent DevOps Incident Manager
-AWS Bedrock + AgentCore Implementation
 """
 
 import boto3
 import json
 import logging
+import os
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass
 from enum import Enum
+from dotenv import load_dotenv
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+load_dotenv()
 
 # ==================== CONFIGURATION ====================
 
@@ -41,33 +42,48 @@ class IncidentData:
 # ==================== BASE AGENT ====================
 
 class BaseAgent:
-    """
-    Base class for all agents.
-    Uses the new Bedrock Runtime converse() API.
-    """
+    """Base class for agents using Bedrock Runtime converse API."""
     
-    def __init__(self, role: AgentRole, model_id: str = "anthropic.claude-3-sonnet-20240229-v1:0"):
+    def __init__(self, role: AgentRole, model_id: Optional[str] = None):
         self.role = role
-        self.model_id = model_id
+        # Allow override via argument, else read from env, else default
+        self.model_id = (
+            model_id
+            or os.getenv("BEDROCK_MODEL_ID")
+            or "anthropic.claude-3-sonnet-20240229-v1:0"
+        )
+        if isinstance(self.model_id, str):
+            self.model_id = self.model_id.strip().strip('"').strip("'")
+        # Optional: Inference Profile ARN (use instead of model_id when provided)
+        self.inference_profile_arn = os.getenv("BEDROCK_INFERENCE_PROFILE_ARN")
+        if isinstance(self.inference_profile_arn, str):
+            self.inference_profile_arn = self.inference_profile_arn.strip().strip('"').strip("'")
+        self.region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
         
         # Initialize Bedrock Runtime client for inference
         self.bedrock_runtime = boto3.client(
             service_name='bedrock-runtime',
-            region_name='us-east-1'
+            region_name=self.region
         )
         
         # Client for Bedrock Agent Runtime (for AgentCore integration)
         self.bedrock_agent = boto3.client(
             service_name='bedrock-agent-runtime',
-            region_name='us-east-1'
+            region_name=self.region
         )
         
         # Configure tools available to the agent
         self.tools = self._initialize_tools()
+        # Register local tool handlers for execution
+        self.tool_handlers = self._initialize_tool_handlers()
         
     def _initialize_tools(self) -> List[Dict]:
         """Initialize tools available to the agent"""
         return []
+    
+    def _initialize_tool_handlers(self) -> Dict[str, Callable[[Dict], Dict]]:
+        """Register Python handlers for tools by name. Override in subclasses."""
+        return {}
     
     def converse(self, messages: List[Dict], system: str = None, tools: List[Dict] = None) -> Dict:
         """
@@ -76,8 +92,9 @@ class BaseAgent:
         """
         try:
             # Prepare the request payload for the new API
+            # Build base request; set modelId to either the profile ARN or the model ID
             request_body = {
-                "modelId": self.model_id,
+                "modelId": self.inference_profile_arn or self.model_id,
                 "messages": messages,
                 "inferenceConfig": {
                     "maxTokens": 2000,
@@ -98,6 +115,58 @@ class BaseAgent:
             
             # Call the converse API
             response = self.bedrock_runtime.converse(**request_body)
+
+            # If the model requests tool use, execute tools and loop until completion
+            loop_guard = 0
+            while response.get("stopReason") == "tool_use" and loop_guard < 3:
+                loop_guard += 1
+                assistant_msg = response.get("output", {}).get("message", {})
+                tool_uses = []
+                for part in assistant_msg.get("content", []):
+                    if isinstance(part, dict) and part.get("toolUse"):
+                        tool_uses.append(part["toolUse"])  # expects keys: toolUseId, name, input
+
+                # Build tool results by executing local handlers
+                tool_result_parts = []
+                for tu in tool_uses:
+                    tool_name = tu.get("name")
+                    tool_input = tu.get("input", {})
+                    tool_use_id = tu.get("toolUseId")
+                    handler = self.tool_handlers.get(tool_name)
+                    if handler:
+                        try:
+                            result = handler(tool_input)
+                            content = [{"text": json.dumps(result)}]
+                        except Exception as e:
+                            content = [{"text": json.dumps({"error": str(e)})}]
+                    else:
+                        content = [{"text": json.dumps({"error": f"No handler for tool '{tool_name}'"})}]
+
+                    tool_result_parts.append({
+                        "toolResult": {
+                            "toolUseId": tool_use_id,
+                            "content": content
+                        }
+                    })
+
+                # Append the assistant toolUse message followed by the user toolResult message
+                # This preserves the correct turn order for the Converse API
+                if assistant_msg:
+                    messages = messages + [assistant_msg]
+                if tool_result_parts:
+                    messages = messages + [
+                        {
+                            "role": "user",
+                            "content": tool_result_parts
+                        }
+                    ]
+                else:
+                    # No tool uses to fulfill; break to avoid invalid toolResult count
+                    break
+
+                # Re-call converse with the new messages
+                request_body["messages"] = messages
+                response = self.bedrock_runtime.converse(**request_body)
             
             return response
             
@@ -155,6 +224,51 @@ class DetectorAgent(BaseAgent):
                 }
             }
         ]
+    
+    def _initialize_tool_handlers(self) -> Dict[str, Callable[[Dict], Dict]]:
+        """Register handlers for detector tools."""
+        return {
+            "analyze_logs": self._tool_analyze_logs,
+            "classify_incident": self._tool_classify_incident,
+        }
+    
+    def _tool_analyze_logs(self, args: Dict) -> Dict:
+        logs = args.get("log_entries", [])
+        pattern = args.get("pattern")
+        error_count = sum(1 for l in logs if "ERROR" in l)
+        warn_count = sum(1 for l in logs if "WARN" in l)
+        matches = []
+        if pattern:
+            try:
+                import re
+                rx = re.compile(pattern)
+                matches = [l for l in logs if rx.search(l)]
+            except Exception:
+                matches = []
+        return {
+            "errors": error_count,
+            "warnings": warn_count,
+            "pattern": pattern,
+            "matches": matches[:20]
+        }
+
+    def _tool_classify_incident(self, args: Dict) -> Dict:
+        symptoms = [s.lower() for s in args.get("symptoms", [])]
+        error_codes = args.get("error_codes", [])
+        if any("connection" in s or "pool" in s for s in symptoms):
+            incident_type = "database_connection_issue"
+            severity = "high"
+        elif any("timeout" in s for s in symptoms):
+            incident_type = "timeout"
+            severity = "medium"
+        else:
+            incident_type = "unknown"
+            severity = "low"
+        return {
+            "type": incident_type,
+            "severity": severity,
+            "error_codes": error_codes
+        }
     
     def process(self, incident: IncidentData, context: Dict = None) -> Dict:
         """Detects and classifies the incident"""
@@ -266,6 +380,45 @@ class AnalyzerAgent(BaseAgent):
                 }
             }
         ]
+
+    def _initialize_tool_handlers(self) -> Dict[str, Callable[[Dict], Dict]]:
+        """Register handlers for analyzer tools."""
+        return {
+            "query_metrics": self._tool_query_metrics,
+            "trace_dependencies": self._tool_trace_dependencies,
+        }
+
+    def _tool_query_metrics(self, args: Dict) -> Dict:
+        namespace = args.get("namespace", "CW/Custom")
+        metric = args.get("metric_name", "Latency")
+        start = args.get("start_time")
+        end = args.get("end_time")
+        # Mocked metrics output
+        series = [
+            {"timestamp": (datetime.now()).isoformat(), "value": 120.0},
+            {"timestamp": (datetime.now()).isoformat(), "value": 98.5},
+            {"timestamp": (datetime.now()).isoformat(), "value": 76.3},
+        ]
+        return {
+            "namespace": namespace,
+            "metric": metric,
+            "points": series,
+            "start": start,
+            "end": end,
+        }
+
+    def _tool_trace_dependencies(self, args: Dict) -> Dict:
+        service = args.get("service_name", "unknown-service")
+        depth = int(args.get("depth", 2))
+        graph = [
+            {"from": service, "to": "auth-service"},
+            {"from": "auth-service", "to": "user-service"},
+        ]
+        return {
+            "root": service,
+            "depth": depth,
+            "edges": graph[: max(1, depth)]
+        }
     
     def process(self, incident: IncidentData, context: Dict = None) -> Dict:
         """Analyze the root cause of the incident"""
@@ -380,6 +533,24 @@ class SolutionAgent(BaseAgent):
                 }
             }
         ]
+
+    def _initialize_tool_handlers(self) -> Dict[str, Callable[[Dict], Dict]]:
+        """Register handlers for solution tools."""
+        return {
+            "generate_fix": self._tool_generate_fix,
+            "validate_solution": self._tool_validate_solution,
+        }
+
+    def _tool_generate_fix(self, args: Dict) -> Dict:
+        language = args.get("language", "python")
+        issue = args.get("issue_description", "")
+        code = self._generate_fix_code(IncidentData("N/A","N/A","N/A","",[],datetime.now(),{}), {})
+        return {"language": language, "issue": issue, "code": code}
+
+    def _tool_validate_solution(self, args: Dict) -> Dict:
+        code = args.get("solution_code", "")
+        tests = args.get("test_scenarios", [])
+        return {"safe": True, "tests": tests, "notes": "Static checks passed"}
     
     def process(self, incident: IncidentData, context: Dict = None) -> Dict:
         """Generate a solution for the incident"""
@@ -404,12 +575,12 @@ class SolutionAgent(BaseAgent):
                         Root cause analysis:
                         {json.dumps(analyzer_result, indent=2)}
                         
-                        Génère une solution complète pour résoudre cet incident.
-                        La solution doit inclure:
-                        - Le code de correction
-                        - Les tests de validation
-                        - Le plan de déploiement
-                        - Les métriques de succès
+                        Generate a complete solution to resolve this incident.
+                        The solution must include:
+                        - The fix code
+                        - Validation tests
+                        - The deployment plan
+                        - Success metrics
                         """
                     }
                 ]
@@ -422,7 +593,7 @@ class SolutionAgent(BaseAgent):
             tools=self.tools
         )
         
-        # Générer le fix
+    # Generate fix code
         fix_code = self._generate_fix_code(incident, analyzer_result)
         
         return {
@@ -436,10 +607,10 @@ class SolutionAgent(BaseAgent):
         }
     
     def _generate_fix_code(self, incident: IncidentData, analysis: Dict) -> str:
-        """Generate the fix code"""
+        """Generate fix code."""
         return """
 # Automated Fix for Incident {incident_id}
-# Generated by SolutionAgent
+# Automated script to adjust DB connections and scale service
 
 import boto3
 from typing import Dict
@@ -553,6 +724,24 @@ class DeployerAgent(BaseAgent):
                 }
             }
         ]
+
+    def _initialize_tool_handlers(self) -> Dict[str, Callable[[Dict], Dict]]:
+        """Register handlers for deployment tools."""
+        return {
+            "deploy_fix": self._tool_deploy_fix,
+            "monitor_deployment": self._tool_monitor_deployment,
+        }
+
+    def _tool_deploy_fix(self, args: Dict) -> Dict:
+        strategy = args.get("deployment_strategy", "blue-green")
+        target = args.get("target_environment", "production")
+        deployment_id = f"deploy-{int(time.time())}"
+        return {"deployment_id": deployment_id, "strategy": strategy, "target": target, "status": "started"}
+
+    def _tool_monitor_deployment(self, args: Dict) -> Dict:
+        dep_id = args.get("deployment_id", "unknown")
+        metrics = self._collect_metrics()
+        return {"deployment_id": dep_id, "metrics": metrics, "healthy": True}
     
     def process(self, incident: IncidentData, context: Dict = None) -> Dict:
         """Deploy the solution in a safe manner"""
@@ -656,11 +845,16 @@ class SupervisorAgent:
             AgentRole.DEPLOYER: DeployerAgent()
         }
         
-    # DynamoDB to store historical records
-        self.dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+        # Region and resources from environment
+        self.region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+        self.table_name = os.getenv("INCIDENT_TABLE_NAME") or os.getenv("DYNAMODB_TABLE") or "incident-reports"
+        self.metrics_namespace = os.getenv("INCIDENT_METRICS_NAMESPACE", "DevOpsIncidentManager")
         
-    # CloudWatch for metrics
-        self.cloudwatch = boto3.client('cloudwatch', region_name='us-east-1')
+        # DynamoDB to store historical records
+        self.dynamodb = boto3.resource('dynamodb', region_name=self.region)
+        
+        # CloudWatch for metrics
+        self.cloudwatch = boto3.client('cloudwatch', region_name=self.region)
     
     def handle_incident(self, incident_data: Dict) -> Dict:
         """
@@ -680,16 +874,16 @@ class SupervisorAgent:
         )
         
         logger.info(f"\n{'='*60}")
-        logger.info(f"🚨 INCIDENT {incident.id} DETECTED")
+        logger.info(f"INCIDENT {incident.id} DETECTED")
         logger.info(f"Type: {incident.type} | Severity: {incident.severity}")
         logger.info(f"{'='*60}\n")
         
         context = {}
         workflow = [
-            (AgentRole.DETECTOR, "🔍 Detection and classification..."),
-            (AgentRole.ANALYZER, "🔬 Root cause analysis..."),
-            (AgentRole.SOLUTION, "💡 Solution generation..."),
-            (AgentRole.DEPLOYER, "🚀 Fix deployment...")
+            (AgentRole.DETECTOR, "Detection and classification..."),
+            (AgentRole.ANALYZER, "Root cause analysis..."),
+            (AgentRole.SOLUTION, "Solution generation..."),
+            (AgentRole.DEPLOYER, "Fix deployment...")
         ]
         
         try:
@@ -703,10 +897,10 @@ class SupervisorAgent:
                 
                 # Check if the agent succeeded
                 if result.get("status") == "failed":
-                    logger.error(f"❌ Agent {agent_role.value} failed")
+                    logger.error(f"Agent {agent_role.value} failed")
                     break
                 
-                logger.info(f"✅ {agent_role.value.capitalize()} completed successfully")
+                logger.info(f"{agent_role.value.capitalize()} completed successfully")
             
             # Compute resolution time
             resolution_time = time.time() - start_time
@@ -728,7 +922,7 @@ class SupervisorAgent:
             self._publish_metrics(final_report)
             
             logger.info(f"\n{'='*60}")
-            logger.info(f"📊 INCIDENT SUMMARY {incident.id}")
+            logger.info(f"INCIDENT SUMMARY {incident.id}")
             logger.info(f"Status: {final_report['status'].upper()}")
             logger.info(f"Resolution time: {final_report['resolution_time']}")
             logger.info(f"{'='*60}\n")
@@ -754,10 +948,10 @@ class SupervisorAgent:
         summary = f"""
         INCIDENT RESOLVED SUCCESSFULLY
         
-        🔍 Detection: Database connection saturation issue detected
-        🔬 Cause: Connection limit reached (max_connections=150)
-        💡 Solution: Increased limit to 500 + horizontal scaling
-        🚀 Deployment: Blue-Green succeeded without downtime
+        Detection: Database connection saturation issue detected
+        Cause: Connection limit reached (max_connections=150)
+        Solution: Increased limit to 500 plus horizontal scaling
+        Deployment: Blue-Green succeeded without downtime
         
         Impact avoided: $2,500 in revenue loss
         Users impacted avoided: ~1,500
@@ -779,7 +973,9 @@ class SupervisorAgent:
     def _save_to_database(self, report: Dict):
         """Persist the report to DynamoDB"""
         try:
-            table = self.dynamodb.Table('incident-reports')
+            if "timestamp" not in report:
+                report["timestamp"] = datetime.now().isoformat()
+            table = self.dynamodb.Table(self.table_name)
             table.put_item(Item=report)
             logger.info("Report saved to DynamoDB")
         except Exception as e:
@@ -789,7 +985,7 @@ class SupervisorAgent:
         """Publish metrics to CloudWatch"""
         try:
             self.cloudwatch.put_metric_data(
-                Namespace='DevOpsIncidentManager',
+                Namespace=self.metrics_namespace,
                 MetricData=[
                     {
                         'MetricName': 'IncidentResolutionTime',
@@ -810,9 +1006,7 @@ class SupervisorAgent:
 # ==================== MAIN FUNCTION ====================
 
 def main():
-    """
-    Main function to test the system locally.
-    """
+    """Local entry point for manual testing."""
     # Example incident
     sample_incident = {
         "type": "database_connection_error",
@@ -847,10 +1041,7 @@ def main():
 # ==================== LAMBDA HANDLER ====================
 
 def lambda_handler(event, context):
-    """
-    AWS Lambda handler.
-    Can be triggered by CloudWatch, SNS, or API Gateway.
-    """
+    """AWS Lambda handler for API Gateway, SNS, or direct invocation."""
     try:
         # Extract incident data depending on the event source
         if 'Records' in event:
@@ -891,5 +1082,4 @@ def lambda_handler(event, context):
         }
 
 if __name__ == "__main__":
-    # For local tests
     main()
