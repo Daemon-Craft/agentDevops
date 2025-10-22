@@ -173,6 +173,25 @@ class BaseAgent:
         except Exception as e:
             logger.error(f"Error in converse API: {str(e)}")
             raise
+
+    def _parse_response(self, response: Dict) -> Dict:
+        """Parse a Bedrock converse response into a simple structure.
+        Returns both 'analysis' (first text block) and 'text' (all text joined), plus tools_used flag.
+        """
+        try:
+            content = response.get("output", {}).get("message", {}).get("content", [])
+            texts: List[str] = []
+            for part in content:
+                if isinstance(part, dict) and "text" in part:
+                    texts.append(part["text"] or "")
+            analysis = texts[0].strip() if texts else ""
+            return {
+                "analysis": analysis,
+                "text": "\n".join(t.strip() for t in texts if t).strip(),
+                "tools_used": response.get("stopReason") == "tool_use"
+            }
+        except Exception:
+            return {"analysis": "", "text": "", "tools_used": False}
     
     def process(self, incident: IncidentData, context: Dict = None) -> Dict:
         """Method to be overridden by each specialized agent"""
