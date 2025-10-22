@@ -125,7 +125,7 @@ class DetectorAgent(BaseAgent):
             {
                 "toolSpec": {
                     "name": "analyze_logs",
-                    "description": "Analyse les logs pour détecter des anomalies",
+                        "description": "Analyze logs to detect anomalies",
                     "inputSchema": {
                         "json": {
                             "type": "object",
@@ -141,7 +141,7 @@ class DetectorAgent(BaseAgent):
             {
                 "toolSpec": {
                     "name": "classify_incident",
-                    "description": "Classifie le type d'incident détecté",
+                        "description": "Classify the detected incident type",
                     "inputSchema": {
                         "json": {
                             "type": "object",
@@ -160,12 +160,12 @@ class DetectorAgent(BaseAgent):
         """Detects and classifies the incident"""
         
         system_prompt = """
-        Tu es un agent expert en détection d'incidents DevOps.
-        Analyse les logs et symptômes pour identifier:
-        1. Le type exact d'incident
-        2. La sévérité (Critical/High/Medium/Low)
-        3. Les services affectés
-        4. Les premiers indices de la cause racine
+            You are an expert DevOps incident detection agent.
+            Analyze logs and symptoms to identify:
+            1. The exact incident type
+            2. The severity (Critical/High/Medium/Low)
+            3. The affected services
+            4. The first signals of the root cause
         """
         
         messages = [
@@ -174,15 +174,15 @@ class DetectorAgent(BaseAgent):
                 "content": [
                     {
                         "text": f"""
-                        Analyse cet incident:
-                        ID: {incident.id}
-                        Type initial: {incident.type}
-                        Description: {incident.description}
+                            Analyze this incident:
+                            ID: {incident.id}
+                            Initial type: {incident.type}
+                            Description: {incident.description}
                         
-                        Logs récents (dernières 50 lignes):
-                        {chr(10).join(incident.logs[-50:])}
+                            Recent logs (last 50 lines):
+                            {chr(10).join(incident.logs[-50:])}
                         
-                        Détecte les anomalies et classifie l'incident.
+                            Detect anomalies and classify the incident.
                         """
                     }
                 ]
@@ -202,8 +202,8 @@ class DetectorAgent(BaseAgent):
             "detection": self._parse_response(response),
             "confidence": 0.95
         }
-        
-        logger.info(f"Détection terminée pour incident {incident.id}")
+
+        logger.info(f"Detection completed for incident {incident.id}")
         return result
     
     def _parse_response(self, response: Dict) -> Dict:
@@ -234,7 +234,7 @@ class AnalyzerAgent(BaseAgent):
             {
                 "toolSpec": {
                     "name": "query_metrics",
-                    "description": "Interroge les métriques CloudWatch",
+                    "description": "Query CloudWatch metrics",
                     "inputSchema": {
                         "json": {
                             "type": "object",
@@ -252,7 +252,7 @@ class AnalyzerAgent(BaseAgent):
             {
                 "toolSpec": {
                     "name": "trace_dependencies",
-                    "description": "Trace les dépendances entre services",
+                    "description": "Trace dependencies between services",
                     "inputSchema": {
                         "json": {
                             "type": "object",
@@ -273,12 +273,12 @@ class AnalyzerAgent(BaseAgent):
         detection_result = context.get("detector", {}) if context else {}
         
         system_prompt = """
-        Tu es un agent expert en analyse de cause racine (RCA).
-        Ton rôle est de:
-        1. Identifier la cause exacte du problème
-        2. Tracer l'impact sur les autres services
-        3. Déterminer la chronologie des événements
-        4. Proposer des pistes de résolution
+        You are an expert Root Cause Analysis (RCA) agent.
+        Your role is to:
+        1. Identify the exact cause of the issue
+        2. Trace the impact on other services
+        3. Determine the timeline of events
+        4. Propose remediation paths
         """
         
         messages = [
@@ -287,16 +287,16 @@ class AnalyzerAgent(BaseAgent):
                 "content": [
                     {
                         "text": f"""
-                        Résultats de la détection:
+                        Detection results:
                         {json.dumps(detection_result, indent=2)}
                         
-                        Incident original:
+                        Original incident:
                         - ID: {incident.id}
                         - Type: {incident.type}
-                        - Sévérité: {incident.severity}
+                        - Severity: {incident.severity}
                         
-                        Effectue une analyse approfondie de la cause racine.
-                        Utilise les outils disponibles pour interroger les métriques et tracer les dépendances.
+                        Perform an in-depth root cause analysis.
+                        Use available tools to query metrics and trace dependencies.
                         """
                     }
                 ]
@@ -328,9 +328,9 @@ class AnalyzerAgent(BaseAgent):
     def _get_recommendations(self, response: Dict) -> List[str]:
         """Extract recommendations from the response"""
         return [
-            "Redémarrer le service API Gateway",
-            "Augmenter les limites de connexion DB",
-            "Activer le circuit breaker"
+            "Restart the API Gateway service",
+            "Increase DB connection limits",
+            "Enable the circuit breaker"
         ]
 
 # ==================== SOLUTION AGENT ====================
@@ -349,7 +349,7 @@ class SolutionAgent(BaseAgent):
             {
                 "toolSpec": {
                     "name": "generate_fix",
-                    "description": "Génère le code pour corriger le problème",
+                    "description": "Generate code to fix the issue",
                     "inputSchema": {
                         "json": {
                             "type": "object",
@@ -366,7 +366,7 @@ class SolutionAgent(BaseAgent):
             {
                 "toolSpec": {
                     "name": "validate_solution",
-                    "description": "Valide que la solution est sûre",
+                    "description": "Validate that the solution is safe",
                     "inputSchema": {
                         "json": {
                             "type": "object",
@@ -387,13 +387,13 @@ class SolutionAgent(BaseAgent):
         analyzer_result = context.get("analyzer", {}) if context else {}
         
         system_prompt = """
-        Tu es un agent expert en génération de solutions DevOps.
-        Tu dois:
-        1. Créer du code production-ready pour corriger le problème
-        2. Inclure des tests automatisés
-        3. Prévoir un plan de rollback
-        4. Optimiser pour la performance et la sécurité
-        """
+    You are an expert DevOps solution generation agent.
+    You must:
+    1. Produce production-ready code to fix the issue
+    2. Include automated tests
+    3. Provide a rollback plan
+    4. Optimize for performance and security
+    """
         
         messages = [
             {
@@ -401,7 +401,7 @@ class SolutionAgent(BaseAgent):
                 "content": [
                     {
                         "text": f"""
-                        Analyse de la cause racine:
+                        Root cause analysis:
                         {json.dumps(analyzer_result, indent=2)}
                         
                         Génère une solution complète pour résoudre cet incident.
@@ -446,9 +446,9 @@ from typing import Dict
 
 def apply_fix() -> Dict:
     '''
-    Fix automatique pour résoudre le problème de connexion DB
+    Automatic fix to resolve the DB connection issue
     '''
-    # 1. Augmenter les limites de connexion
+    # 1. Increase connection limits
     rds_client = boto3.client('rds')
     rds_client.modify_db_parameter_group(
         DBParameterGroupName='production-db-params',
@@ -461,7 +461,7 @@ def apply_fix() -> Dict:
         ]
     )
     
-    # 2. Redémarrer le service avec nouvelle config
+    # 2. Restart the service with new config
     ecs_client = boto3.client('ecs')
     ecs_client.update_service(
         cluster='production-cluster',
@@ -489,21 +489,21 @@ if __name__ == '__main__':
     def _generate_tests(self, fix_code: str) -> List[str]:
         """Generate tests to validate the fix"""
         return [
-            "Test de charge: 1000 requêtes/seconde",
-            "Test de connexion DB: 400 connexions simultanées",
-            "Test de failover: arrêt d'une instance"
+            "Load test: 1000 requests/second",
+            "DB connection test: 400 concurrent connections",
+            "Failover test: stop one instance"
         ]
     
     def _create_rollback_plan(self) -> Dict:
         """Create a rollback plan"""
         return {
             "steps": [
-                "Sauvegarder la configuration actuelle",
-                "Appliquer le fix progressivement (canary deployment)",
-                "Monitorer les métriques pendant 5 minutes",
-                "Si erreur: restaurer la configuration précédente"
+                "Back up the current configuration",
+                "Apply the fix progressively (canary deployment)",
+                "Monitor metrics for 5 minutes",
+                "If errors occur: restore the previous configuration"
             ],
-            "duration": "10 minutes maximum"
+            "duration": "maximum 10 minutes"
         }
 
 # ==================== DEPLOYER AGENT ====================
@@ -522,7 +522,7 @@ class DeployerAgent(BaseAgent):
             {
                 "toolSpec": {
                     "name": "deploy_fix",
-                    "description": "Déploie la solution en production",
+                    "description": "Deploy the solution to production",
                     "inputSchema": {
                         "json": {
                             "type": "object",
@@ -539,7 +539,7 @@ class DeployerAgent(BaseAgent):
             {
                 "toolSpec": {
                     "name": "monitor_deployment",
-                    "description": "Monitore le déploiement en temps réel",
+                    "description": "Monitor the deployment in real time",
                     "inputSchema": {
                         "json": {
                             "type": "object",
@@ -560,12 +560,12 @@ class DeployerAgent(BaseAgent):
         solution_result = context.get("solution", {}) if context else {}
         
         system_prompt = """
-        Tu es un agent expert en déploiement DevOps.
-        Tu dois:
-        1. Déployer la solution de manière progressive et sécurisée
-        2. Monitorer en temps réel les métriques
-        3. Déclencher un rollback automatique si nécessaire
-        4. Valider le succès du déploiement
+        You are an expert DevOps deployment agent.
+        You must:
+        1. Deploy the solution in a progressive and safe manner
+        2. Monitor metrics in real time
+        3. Trigger an automatic rollback if necessary
+        4. Validate the success of the deployment
         """
         
         messages = [
@@ -574,13 +574,13 @@ class DeployerAgent(BaseAgent):
                 "content": [
                     {
                         "text": f"""
-                        Solution à déployer:
+                        Solution to deploy:
                         {json.dumps(solution_result, indent=2)}
                         
-                        Déploie cette solution en production avec:
-                        - Stratégie: Blue-Green deployment
-                        - Monitoring: Toutes les métriques critiques
-                        - Rollback: Automatique si erreur détectée
+                        Deploy this solution to production with:
+                        - Strategy: Blue-Green deployment
+                        - Monitoring: All critical metrics
+                        - Rollback: Automatic if errors are detected
                         """
                     }
                 ]
@@ -593,7 +593,7 @@ class DeployerAgent(BaseAgent):
             tools=self.tools
         )
         
-    # Simulate the deployment
+        # Simulate the deployment
         deployment_result = self._execute_deployment(solution_result)
         
         return {
@@ -634,11 +634,11 @@ class DeployerAgent(BaseAgent):
     def _collect_metrics(self) -> Dict:
         """Collect post-deployment metrics"""
         return {
-            "response_time": "45ms (↓ 65%)",
-            "error_rate": "0.01% (↓ 99%)",
-            "throughput": "2500 req/s (↑ 150%)",
-            "cpu_usage": "35% (↓ 40%)",
-            "memory_usage": "62% (→ 0%)"
+            "response_time": "45ms (down 65%)",
+            "error_rate": "0.01% (down 99%)",
+            "throughput": "2500 req/s (up 150%)",
+            "cpu_usage": "35% (down 40%)",
+            "memory_usage": "62% (no change)"
         }
 
 # ==================== MAIN SUPERVISOR ====================
@@ -663,9 +663,9 @@ class SupervisorAgent:
         self.cloudwatch = boto3.client('cloudwatch', region_name='us-east-1')
     
     def handle_incident(self, incident_data: Dict) -> Dict:
-    """
-    Main entry point to handle an incident.
-    """
+        """
+        Main entry point to handle an incident.
+        """
         start_time = time.time()
         
         # Create the incident object
@@ -680,16 +680,16 @@ class SupervisorAgent:
         )
         
         logger.info(f"\n{'='*60}")
-        logger.info(f"🚨 INCIDENT {incident.id} DÉTECTÉ")
-        logger.info(f"Type: {incident.type} | Sévérité: {incident.severity}")
+        logger.info(f"🚨 INCIDENT {incident.id} DETECTED")
+        logger.info(f"Type: {incident.type} | Severity: {incident.severity}")
         logger.info(f"{'='*60}\n")
         
         context = {}
         workflow = [
-            (AgentRole.DETECTOR, "🔍 Détection et classification..."),
-            (AgentRole.ANALYZER, "🔬 Analyse de la cause racine..."),
-            (AgentRole.SOLUTION, "💡 Génération de la solution..."),
-            (AgentRole.DEPLOYER, "🚀 Déploiement du fix...")
+            (AgentRole.DETECTOR, "🔍 Detection and classification..."),
+            (AgentRole.ANALYZER, "🔬 Root cause analysis..."),
+            (AgentRole.SOLUTION, "💡 Solution generation..."),
+            (AgentRole.DEPLOYER, "🚀 Fix deployment...")
         ]
         
         try:
@@ -703,10 +703,10 @@ class SupervisorAgent:
                 
                 # Check if the agent succeeded
                 if result.get("status") == "failed":
-                    logger.error(f"❌ Échec de l'agent {agent_role.value}")
+                    logger.error(f"❌ Agent {agent_role.value} failed")
                     break
                 
-                logger.info(f"✅ {agent_role.value.capitalize()} terminé avec succès")
+                logger.info(f"✅ {agent_role.value.capitalize()} completed successfully")
             
             # Compute resolution time
             resolution_time = time.time() - start_time
@@ -728,9 +728,9 @@ class SupervisorAgent:
             self._publish_metrics(final_report)
             
             logger.info(f"\n{'='*60}")
-            logger.info(f"📊 RÉSUMÉ DE L'INCIDENT {incident.id}")
+            logger.info(f"📊 INCIDENT SUMMARY {incident.id}")
             logger.info(f"Status: {final_report['status'].upper()}")
-            logger.info(f"Temps de résolution: {final_report['resolution_time']}")
+            logger.info(f"Resolution time: {final_report['resolution_time']}")
             logger.info(f"{'='*60}\n")
             
             return final_report
@@ -752,16 +752,16 @@ class SupervisorAgent:
         deployer = context.get(AgentRole.DEPLOYER.value, {})
         
         summary = f"""
-        INCIDENT RÉSOLU AVEC SUCCÈS
+        INCIDENT RESOLVED SUCCESSFULLY
         
-        🔍 Détection: Problème de saturation des connexions DB détecté
-        🔬 Cause: Limite de connexions atteinte (max_connections=150)
-        💡 Solution: Augmentation limite à 500 + scaling horizontal
-        🚀 Déploiement: Blue-Green réussi sans interruption
+        🔍 Detection: Database connection saturation issue detected
+        🔬 Cause: Connection limit reached (max_connections=150)
+        💡 Solution: Increased limit to 500 + horizontal scaling
+        🚀 Deployment: Blue-Green succeeded without downtime
         
-        Impact évité: $2,500 de perte revenue
-        Utilisateurs sauvés: ~1,500
-        Temps de résolution: 4.2 minutes (vs 2h manuellement)
+        Impact avoided: $2,500 in revenue loss
+        Users impacted avoided: ~1,500
+        Resolution time: 4.2 minutes (vs 2h manually)
         """
         
         return summary.strip()
@@ -813,7 +813,7 @@ def main():
     """
     Main function to test the system locally.
     """
-    # Exemple d'incident
+    # Example incident
     sample_incident = {
         "type": "database_connection_error",
         "severity": "high",
@@ -838,7 +838,7 @@ def main():
     
     # Print the final result
     print("\n" + "="*60)
-    print("RAPPORT FINAL")
+    print("FINAL REPORT")
     print("="*60)
     print(json.dumps(result, indent=2, default=str))
     
